@@ -2,6 +2,8 @@
 
 Stop poping your YubiKey on Mattermost !
 
+An eBPF + bpftrace solution ;-)
+
 # Install as a `systemd` service
 
 ```
