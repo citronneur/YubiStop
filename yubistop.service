@@ -1,0 +1,16 @@
+[Unit]
+Description=yubistop - block YubiKey OTP Enter in Firefox/Mattermost
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bpftrace --unsafe -B line /usr/local/share/yubistop/yubistop.bt
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+TimeoutStopSec=10s
+User=root
+
+
+[Install]
+WantedBy=multi-user.target

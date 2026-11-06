@@ -1,0 +1,112 @@
+#!/usr/bin/env bpftrace
+
+
+#define EV_KEY      1
+#define YUBICO_VID  0x1050
+
+#define KEY_ENTER       28
+#define KEY_KPENTER     96
+
+#define GDK_KEY_PRESS        8
+#define GDK_KEY_RELEASE      9
+#define GDK_KEY_Return       0xff0d
+#define GDK_KEY_KP_Enter     0xff8d
+#define GDK_KEY_ISO_Enter    0xfe34
+#define GDK_KEY_VoidSymbol   0xffffff
+
+
+/* GTK3 GdkEventKey (gdk/gdkevents.h) */
+/* https://docs.gtk.org/gdk3/struct.EventKey.html */
+struct GdkEventKey {
+	int            type;
+	void          *window;
+	signed char    send_event;
+	unsigned int   time;
+	unsigned int   state;
+	unsigned int   keyval;
+	int            length;
+	char          *string;
+	unsigned short hardware_keycode;
+	unsigned char  group;
+	unsigned int   is_modifier : 1;
+};
+
+
+BEGIN
+{
+	@title = "<unknown>";
+	@title_pid = 0;
+	@yk_keyboard = 0;
+	printf("[*] Monitoring YubiKey (vendor 0x%04x) touches... Ctrl-C to stop.\n",
+	       YUBICO_VID);
+}
+
+/*
+ * void gtk_window_set_title(GtkWindow *window, const gchar *title);
+ */
+uprobe:/usr/lib/libgtk-3.so.0:gtk_window_set_title
+/comm == "firefox" || comm == "firefox-bin"/
+{
+	if (arg1 != 0) {
+		@title = str(arg1);
+		@title_pid = pid;
+		printf("[*] Firefox Switch %s\n", @title);
+	}
+}
+
+/*
+ * void gtk_main_do_event(GdkEvent *event);
+ */
+uprobe:/usr/lib/libgtk-3.so.0:gtk_main_do_event
+/comm == "firefox" || comm == "firefox-bin"/
+{
+	$e = (struct GdkEventKey *)arg0;
+	$type = $e->type;
+
+	if ($type != GDK_KEY_PRESS && $type != GDK_KEY_RELEASE) {
+		return;
+	}
+
+	$kv = $e->keyval;
+	if ($kv != GDK_KEY_Return && $kv != GDK_KEY_KP_Enter &&
+	    $kv != GDK_KEY_ISO_Enter) {
+		return;
+	}
+
+	if (@yk_keyboard && strcontains(@title, "Mattermost")) {
+		$void = (uint32)GDK_KEY_VoidSymbol;
+		$code = (uint16)0;
+
+		write_user((uint8 *)(arg0 + offsetof(struct GdkEventKey, keyval)), &$void, 4);
+		write_user((uint8 *)(arg0 + offsetof(struct GdkEventKey, hardware_keycode)), &$code, 2);
+
+		if ($type == GDK_KEY_PRESS) {
+			time("%H:%M:%S ");
+			printf("[*] blocked YubiKey Enter in firefox[%d]\n", pid);
+		}
+	}
+}
+
+/*
+ * void input_event(struct input_dev *dev, unsigned int type,
+ *                  unsigned int code, int value);
+ */
+kprobe:input_event
+/arg1 == EV_KEY && arg3 == 1/
+{
+	$dev  = (struct input_dev *)arg0;
+
+	if ($dev->id.vendor == YUBICO_VID) {
+	    @yk_keyboard = 1;
+	}
+	else {
+	    @yk_keyboard = 0;
+	}
+}
+
+END
+{
+	if (!delete(@title) || !delete(@title_pid) || !delete(@yk_keyboard)) {
+		printf("[!] Error during cleaning phase\n");
+	}
+}
